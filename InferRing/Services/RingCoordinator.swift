@@ -115,6 +115,10 @@ final class RingCoordinator {
 
     func startFormation() {
         bonjourClient?.startSearching()
+        if peers.isEmpty {
+            startStandaloneRing()
+            return
+        }
         initiateElection()
     }
 
@@ -203,6 +207,14 @@ final class RingCoordinator {
             timestamp: Date()
         )
         sendToSuccessor(message)
+    }
+
+    private func startStandaloneRing() {
+        dprint("Starting standalone ring")
+        coordinatorID = localDeviceID
+        state = .coordinator
+        buildRing()
+        bonjourClient?.stopSearching()
     }
 
     private func sendToSuccessor(_ message: ElectionMessage) {

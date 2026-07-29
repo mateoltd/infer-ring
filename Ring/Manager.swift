@@ -7,6 +7,20 @@ import MLXLLM
 import MLXVLM
 import MLXNN
 
+private struct ModelCacheDownloader: Downloader {
+    let directory: URL
+
+    func download(
+        id: String,
+        revision: String?,
+        matching patterns: [String],
+        useLatest: Bool,
+        progressHandler: @Sendable @escaping (Progress) -> Void
+    ) async throws -> URL {
+        directory
+    }
+}
+
 public final class MLXManager {
     public init() {}
 
@@ -71,12 +85,25 @@ public final class MLXManager {
     ) async throws -> ModelContext {
         Memory.clearCache()
 
-        let factory: ModelFactory = card.isVisionModel ? VLMModelFactory.shared : LLMModelFactory.shared
-        var context = try await factory.load(
-            configuration: ModelConfiguration(id: card.modelId),
-            lazy: group != nil,
-            progressHandler: progressHandler
-        )
+        let configuration = ModelConfiguration(id: card.modelId)
+        let downloader = ModelCacheDownloader(directory: card.cacheDirectory)
+        let tokenizerLoader = SwiftTransformersTokenizerLoader()
+        var context: ModelContext
+        if card.isVisionModel {
+            context = try await VLMModelFactory.shared.load(
+                from: downloader,
+                using: tokenizerLoader,
+                configuration: configuration,
+                progressHandler: progressHandler
+            )
+        } else {
+            context = try await LLMModelFactory.shared.load(
+                from: downloader,
+                using: tokenizerLoader,
+                configuration: configuration,
+                progressHandler: progressHandler
+            )
+        }
 
         if let group {
             if shardMeta.useTensorParallel && card.metadata.supportsTensor {
