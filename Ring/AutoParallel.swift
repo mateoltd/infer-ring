@@ -1,5 +1,6 @@
 import MLX
 import MLXLMCommon
+import MLXLLM
 
 /// Compatibility boundary for pipeline sharding.
 ///
@@ -12,6 +13,27 @@ public func pipelineAutoParallel(
     group: DistributedGroup,
     modelShardMeta: ShardMetadata
 ) -> any LanguageModel {
+    if let qwen = model as? Qwen35TextModel {
+        qwen.configurePipeline(
+            startLayer: modelShardMeta.startLayer,
+            endLayer: modelShardMeta.endLayer,
+            rank: modelShardMeta.deviceRank,
+            worldSize: modelShardMeta.worldSize,
+            group: group
+        )
+        return model
+    }
+    if let qwen = model as? Qwen35Model {
+        qwen.configurePipeline(
+            startLayer: modelShardMeta.startLayer,
+            endLayer: modelShardMeta.endLayer,
+            rank: modelShardMeta.deviceRank,
+            worldSize: modelShardMeta.worldSize,
+            group: group
+        )
+        return model
+    }
+
     print(
         "Warning: pipeline sharding is unavailable for \(type(of: model)); "
             + "using the unmodified model"

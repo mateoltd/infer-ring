@@ -85,7 +85,10 @@ public final class MLXManager {
     ) async throws -> ModelContext {
         Memory.clearCache()
 
-        let configuration = ModelConfiguration(id: card.modelId)
+        let configuration = ModelConfiguration(
+            id: card.modelId,
+            eagerlyEvaluateWeights: group == nil
+        )
         let downloader = ModelCacheDownloader(directory: card.cacheDirectory)
         let tokenizerLoader = SwiftTransformersTokenizerLoader()
         var context: ModelContext
