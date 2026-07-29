@@ -666,9 +666,9 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		0C7DE5E12F22B5CD00EC1E4E /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/N1k1tung/mlx-swift";
+			repositoryURL = "https://github.com/mateoltd/mlx-swift";
 			requirement = {
-				branch = "ios-distrib-0.3.0";
+				branch = "perf/qwen35-flight";
 				kind = branch;
 			};
 		};
