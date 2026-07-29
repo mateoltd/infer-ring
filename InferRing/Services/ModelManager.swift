@@ -534,13 +534,50 @@ final class ModelManager {
         let useTensorParallel = ParallelModeSettings.useTensorParallel
         let devices = coordinator.ringDevices.sorted { $0.rank < $1.rank }
         let totalMemory = coordinator.usableRAM
-        var metas = [ShardMetadata]()
-        var assignedLayers = 0
         let size = devices.count
         let nLayers = modelCard.metadata.nLayers
-        for device in devices {
+        var layerCounts = [Int]()
+        var proportionallyAssigned = 0
+
+        for (index, device) in devices.enumerated() {
             let deviceMemory = device.device.hardwareProfile?.recommendedUsageRAM ?? 1024 * 1024 * 1024
-            let shardLayers = nLayers *  deviceMemory / totalMemory
+            let shardLayers =
+                index < size - 1
+                ? nLayers * deviceMemory / totalMemory
+                : nLayers - proportionallyAssigned
+            layerCounts.append(shardLayers)
+            proportionallyAssigned += shardLayers
+        }
+
+        // iOS usable process memory is substantially lower than unified physical
+        // memory. Keep pipeline workers below the jetsam cliff and use the phone
+        // primarily as a capacity stage rather than treating all 8 GB as available.
+        if !useTensorParallel, size > 1 {
+            let maxPhoneLayers = max(1, nLayers / 8)
+            var reclaimedLayers = 0
+
+            for index in devices.indices
+            where devices[index].device.hardwareProfile?.idiom == .iPhone {
+                let capped = min(layerCounts[index], maxPhoneLayers)
+                reclaimedLayers += layerCounts[index] - capped
+                layerCounts[index] = capped
+            }
+
+            if reclaimedLayers > 0,
+               let macIndex = devices.indices
+                .filter({ devices[$0].device.hardwareProfile?.idiom == .mac })
+                .max(by: {
+                    (devices[$0].device.hardwareProfile?.recommendedUsageRAM ?? 0)
+                        < (devices[$1].device.hardwareProfile?.recommendedUsageRAM ?? 0)
+                }) {
+                layerCounts[macIndex] += reclaimedLayers
+            }
+        }
+
+        var metas = [ShardMetadata]()
+        var assignedLayers = 0
+        for (index, device) in devices.enumerated() {
+            let shardLayers = layerCounts[index]
             metas.append(ShardMetadata(
                 modelMeta: modelCard.metadata,
                 deviceRank: device.rank,
@@ -550,6 +587,10 @@ final class ModelManager {
                 endLayer: device.rank < size - 1 ? assignedLayers+shardLayers : nLayers,
                 nLayers: nLayers
             ))
+            print(
+                "Pipeline shard rank \(device.rank): "
+                    + "\(assignedLayers)..<\(device.rank < size - 1 ? assignedLayers + shardLayers : nLayers)"
+            )
             assignedLayers += shardLayers
         }
         return metas
