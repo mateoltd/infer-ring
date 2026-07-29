@@ -412,16 +412,17 @@ final class ModelManager {
             }
             return
         }
-        let resolvedHistory = history?.map(\.resolvedChatMessage) ?? []
+        let resolvedHistory = (history?.map(\.resolvedChatMessage) ?? [])
+            .withImplicitSystemMessage
 
         if history == nil {
             ChatImageAttachmentStore.removeAll()
         }
 
-        if resolvedHistory.isEmpty {
+        if resolvedHistory.count == 1, resolvedHistory.first?.role == .system {
             chatSession = ChatSession(
                 currentModel,
-                instructions: ChatMessage.systemMessage.content,
+                instructions: resolvedHistory[0].content,
                 generateParameters: flightGenerationParameters,
                 tools: tools
             )
@@ -460,10 +461,10 @@ final class ModelManager {
         }
         guard let history else { return .reuse }
 
-        let requestedHistory = history.map(\.resolvedChatMessage)
-        let requestedConversation = (
-            requestedHistory.isEmpty ? [.systemMessage] : requestedHistory
-        ).conversationSignature
+        let requestedConversation = history
+            .map(\.resolvedChatMessage)
+            .withImplicitSystemMessage
+            .conversationSignature
         let currentConversation = (await chatHistoryStore.snapshot()).conversationSignature
         guard requestedConversation != currentConversation else { return .reuse }
 
@@ -753,7 +754,7 @@ private actor ChatHistoryStore {
     }
 
     func replace(with messages: [ChatMessage]) {
-        self.messages = messages.isEmpty ? [.systemMessage] : messages
+        self.messages = messages.withImplicitSystemMessage
     }
 
     func append(role: ChatMessage.Role, content: String, images: [ChatImageAttachment] = []) {
@@ -783,6 +784,11 @@ private extension OpenAPIMessage {
 }
 
 private extension Array where Element == ChatMessage {
+    var withImplicitSystemMessage: [ChatMessage] {
+        guard first?.role != .system else { return self }
+        return [.systemMessage] + self
+    }
+
     var conversationSignature: [ConversationMessageSignature] {
         map {
             ConversationMessageSignature(
