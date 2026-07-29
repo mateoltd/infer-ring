@@ -169,6 +169,12 @@ func getLayers(from model: any LanguageModel) -> [TransformerLayer] {
     if let glm = model as? GLM4MoELiteModel {
         return glm.model.layers
     }
+    if let qwen = model as? Qwen35Model {
+        return qwen.languageModel.model.layers
+    }
+    if let qwen = model as? Qwen35TextModel {
+        return qwen.model.layers
+    }
 
     return []
 }
@@ -209,9 +215,14 @@ func setLayers(on model: any LanguageModel, newLayers: [TransformerLayer], shard
         glm.model.layers = newLayers
         glm.model.rebuildCaches()
     }
+    else if let qwen = model as? Qwen35Model {
+        qwen.languageModel.model.replaceLayers(newLayers, shardOffset: shardOffset)
+    }
+    else if let qwen = model as? Qwen35TextModel {
+        qwen.model.replaceLayers(newLayers, shardOffset: shardOffset)
+    }
     else {
         print("Couldn't update hidden layers for model \(String(describing: type(of: model)))")
     }
 
 }
-

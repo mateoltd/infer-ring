@@ -712,6 +712,24 @@ public struct ModelCards {
                 supportsTensor: false
             )
         ),
+        "Qwen3.5-9B-Flight-Q4": ModelCard(
+            shortId: "Qwen3.5-9B-Flight-Q4",
+            modelId: "mlx-community/Qwen3.5-9B-4bit",
+            name: "Qwen3.5 9B Flight Q4 (text-only)",
+            description: """
+            Qwen3.5-9B 4-bit affine weights loaded through the text-only MLX path. \
+            This avoids retaining the vision tower for coding and enables pipeline sharding.
+            """,
+            tags: [],
+            metadata: ModelMetadata(
+                modelId: "mlx-community/Qwen3.5-9B-4bit",
+                prettyName: "Qwen3.5 9B Flight Q4 (text-only)",
+                storageSize: MemorySize.from_mb(5701),
+                nLayers: 32,
+                hiddenSize: 4096,
+                supportsTensor: false
+            )
+        ),
         "Qwen3.5-9B-MLX-4bit": ModelCard(
             shortId: "Qwen3.5-9B-MLX-4bit",
             modelId: "mlx-community/Qwen3.5-9B-MLX-4bit",

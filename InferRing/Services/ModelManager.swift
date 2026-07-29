@@ -38,6 +38,16 @@ final class ModelManager {
     private var currentToolSignature: Data?
     @ObservationIgnored
     private let chatHistoryStore = ChatHistoryStore()
+    private let flightGenerationParameters = GenerateParameters(
+        maxTokens: 1024,
+        maxContextTokens: 100_000,
+        kvBits: 8,
+        kvGroupSize: 64,
+        quantizedKVStart: 0,
+        temperature: 0.2,
+        topP: 0.95,
+        prefillStepSize: 2048
+    )
     var currentModelCard: ModelCard?
     var isLoading: Bool = false
     var promptTokensPerSecond: Double?
@@ -51,8 +61,13 @@ final class ModelManager {
 
     private func checkIfCanLoad(_ modelCard: ModelCard) throws {
         let totalMemory = coordinator?.usableRAM ?? 0
-        if modelCard.metadata.storageSize.inBytes > totalMemory {
-            throw ModelManagerError.insufficientResources("total ring memory: \(totalMemory.formattedMemory), required: \(modelCard.metadata.storageSize.inBytes.formattedMemory)")
+        let weightBytes = modelCard.metadata.storageSize.inBytes
+        let runtimeHeadroom = max(2 * 1024 * 1024 * 1024, weightBytes / 5)
+        let requiredMemory = weightBytes + runtimeHeadroom
+        if requiredMemory > totalMemory {
+            throw ModelManagerError.insufficientResources(
+                "total ring memory: \(totalMemory.formattedMemory), weights: \(weightBytes.formattedMemory), required with runtime headroom: \(requiredMemory.formattedMemory)"
+            )
         }
     }
 
@@ -377,6 +392,7 @@ final class ModelManager {
             chatSession = ChatSession(
                 currentModel,
                 instructions: ChatMessage.systemMessage.content,
+                generateParameters: flightGenerationParameters,
                 tools: tools
             )
         }
@@ -390,6 +406,7 @@ final class ModelManager {
                         images: $0.images.map(\.userInputImage)
                     )
                 },
+                generateParameters: flightGenerationParameters,
                 tools: tools
             )
         }
