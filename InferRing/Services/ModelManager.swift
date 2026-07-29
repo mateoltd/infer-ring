@@ -38,6 +38,8 @@ final class ModelManager {
     private var currentToolSignature: Data?
     @ObservationIgnored
     private let chatHistoryStore = ChatHistoryStore()
+    @ObservationIgnored
+    private let generationMetricsStore = GenerationMetricsStore()
     private let flightGenerationParameters = GenerateParameters(
         maxTokens: 1024,
         maxContextTokens: 100_000,
@@ -55,6 +57,10 @@ final class ModelManager {
 
     func messageHistory() async -> [ChatMessage] {
         await chatHistoryStore.snapshot()
+    }
+
+    func latestGenerationMetrics() async -> GenerationDebugSnapshot? {
+        await generationMetricsStore.snapshot()
     }
 
     // MARK: - Public API
@@ -212,7 +218,9 @@ final class ModelManager {
         tools: [OpenAPITool]? = nil,
         distributeToPeers: Bool = true
     ) async -> AsyncThrowingStream<ModelResponseChunk, any Error> {
-        if await shouldResetChatSession(history: history, tools: tools) {
+        let requestID = UUID().uuidString
+        let sessionDecision = await chatSessionDecision(history: history, tools: tools)
+        if case .reset = sessionDecision {
             resetChatSession(history: history, tools: tools?.toolSpecs)
             currentToolSignature = toolSignature(for: tools)
         }
@@ -220,6 +228,14 @@ final class ModelManager {
         guard let chatSession else {
             return AsyncThrowingStream { $0.finish(throwing: ModelManagerError.notInitialized) }
         }
+
+        let cacheBefore = await chatSession.cacheMetrics()
+        await generationMetricsStore.begin(
+            requestID: requestID,
+            sessionDecision: sessionDecision,
+            historyMessageCount: history?.count ?? 0,
+            cacheBefore: cacheBefore
+        )
 
         if let history {
             await chatHistoryStore.replace(with: history)
@@ -259,6 +275,7 @@ final class ModelManager {
         let task = Task { [weak self] in
             var fullReply = ""
             var toolCalls: [ModelResponseToolCall] = []
+            var completionInfo: GenerateCompletionInfo?
             do {
                 for try await chunk in originalStream {
                     switch chunk {
@@ -266,6 +283,7 @@ final class ModelManager {
                         fullReply += text
                         continuation.yield(.text(text))
                     case .info(let info):
+                        completionInfo = info
                         self?.promptTokensPerSecond = info.promptTokensPerSecond
                         self?.tokensPerSecond = info.tokensPerSecond
                     case .toolCall(let tool):
@@ -274,6 +292,14 @@ final class ModelManager {
                         continuation.yield(.toolCall(toolCall))
                     }
                 }
+                let cacheAfter = await chatSession.cacheMetrics()
+                if let completionInfo {
+                    await self?.generationMetricsStore.complete(
+                        requestID: requestID,
+                        info: completionInfo,
+                        cacheAfter: cacheAfter
+                    )
+                }
                 await self?.chatHistoryStore.append(
                     role: .assistant,
                     content: Self.assistantHistoryContent(text: fullReply, toolCalls: toolCalls)
@@ -281,6 +307,10 @@ final class ModelManager {
                 continuation.finish()
             }
             catch {
+                await self?.generationMetricsStore.fail(
+                    requestID: requestID,
+                    error: error.localizedDescription
+                )
                 continuation.finish(throwing: error)
             }
         }
@@ -419,21 +449,31 @@ final class ModelManager {
         Memory.clearCache()
     }
 
-    private func shouldResetChatSession(
+    private func chatSessionDecision(
         history: [OpenAPIMessage]? = nil,
         tools: [OpenAPITool]? = nil
-    ) async -> Bool {
-        guard currentModel != nil else { return false }
-        guard chatSession != nil else { return true }
-        guard toolSignature(for: tools) == currentToolSignature else { return true }
-        guard let history else { return false }
+    ) async -> ChatSessionDecision {
+        guard currentModel != nil else { return .reuse }
+        guard chatSession != nil else { return .reset("missing_session") }
+        guard toolSignature(for: tools) == currentToolSignature else {
+            return .reset("tool_signature_changed")
+        }
+        guard let history else { return .reuse }
 
         let requestedHistory = history.map(\.resolvedChatMessage)
         let requestedConversation = (
             requestedHistory.isEmpty ? [.systemMessage] : requestedHistory
         ).conversationSignature
         let currentConversation = (await chatHistoryStore.snapshot()).conversationSignature
-        return requestedConversation != currentConversation
+        guard requestedConversation != currentConversation else { return .reuse }
+
+        let commonCount = min(requestedConversation.count, currentConversation.count)
+        let mismatchIndex = (0 ..< commonCount).first {
+            requestedConversation[$0] != currentConversation[$0]
+        } ?? commonCount
+        return .reset(
+            "history_mismatch_at_\(mismatchIndex)_requested_\(requestedConversation.count)_cached_\(currentConversation.count)"
+        )
     }
 
     private func toolSignature(for tools: [OpenAPITool]?) -> Data? {
@@ -597,6 +637,106 @@ final class ModelManager {
     }
 }
 
+struct GenerationDebugSnapshot: Codable, Sendable {
+    var requestID: String
+    var status: String
+    var sessionReused: Bool
+    var resetReason: String?
+    var historyMessageCount: Int
+    var cachedTokensBefore: Int
+    var activeCachesBefore: Int
+    var cacheOffsetsBefore: [Int]
+    var appendedPromptTokens: Int?
+    var generatedTokens: Int?
+    var promptTimeSeconds: Double?
+    var generationTimeSeconds: Double?
+    var promptTokensPerSecond: Double?
+    var generationTokensPerSecond: Double?
+    var cachedTokensAfter: Int?
+    var activeCachesAfter: Int?
+    var cacheOffsetsAfter: [Int]?
+    var startedAt: Date
+    var completedAt: Date?
+    var error: String?
+}
+
+private enum ChatSessionDecision: Sendable {
+    case reuse
+    case reset(String)
+
+    var reused: Bool {
+        if case .reuse = self { true } else { false }
+    }
+
+    var resetReason: String? {
+        if case .reset(let reason) = self { reason } else { nil }
+    }
+}
+
+private actor GenerationMetricsStore {
+    private var latest: GenerationDebugSnapshot?
+
+    func begin(
+        requestID: String,
+        sessionDecision: ChatSessionDecision,
+        historyMessageCount: Int,
+        cacheBefore: ChatSessionCacheMetrics
+    ) {
+        latest = GenerationDebugSnapshot(
+            requestID: requestID,
+            status: "running",
+            sessionReused: sessionDecision.reused,
+            resetReason: sessionDecision.resetReason,
+            historyMessageCount: historyMessageCount,
+            cachedTokensBefore: cacheBefore.maximumOffset,
+            activeCachesBefore: cacheBefore.activeCacheCount,
+            cacheOffsetsBefore: cacheBefore.offsets,
+            appendedPromptTokens: nil,
+            generatedTokens: nil,
+            promptTimeSeconds: nil,
+            generationTimeSeconds: nil,
+            promptTokensPerSecond: nil,
+            generationTokensPerSecond: nil,
+            cachedTokensAfter: nil,
+            activeCachesAfter: nil,
+            cacheOffsetsAfter: nil,
+            startedAt: Date(),
+            completedAt: nil,
+            error: nil
+        )
+    }
+
+    func complete(
+        requestID: String,
+        info: GenerateCompletionInfo,
+        cacheAfter: ChatSessionCacheMetrics
+    ) {
+        guard latest?.requestID == requestID else { return }
+        latest?.status = "completed"
+        latest?.appendedPromptTokens = info.promptTokenCount
+        latest?.generatedTokens = info.generationTokenCount
+        latest?.promptTimeSeconds = info.promptTime
+        latest?.generationTimeSeconds = info.generateTime
+        latest?.promptTokensPerSecond = info.promptTokensPerSecond
+        latest?.generationTokensPerSecond = info.tokensPerSecond
+        latest?.cachedTokensAfter = cacheAfter.maximumOffset
+        latest?.activeCachesAfter = cacheAfter.activeCacheCount
+        latest?.cacheOffsetsAfter = cacheAfter.offsets
+        latest?.completedAt = Date()
+    }
+
+    func fail(requestID: String, error: String) {
+        guard latest?.requestID == requestID else { return }
+        latest?.status = "failed"
+        latest?.error = error
+        latest?.completedAt = Date()
+    }
+
+    func snapshot() -> GenerationDebugSnapshot? {
+        latest
+    }
+}
+
 private actor ChatHistoryStore {
     private var messages: [ChatMessage] = [.systemMessage]
 
@@ -647,11 +787,32 @@ private extension Array where Element == ChatMessage {
         map {
             ConversationMessageSignature(
                 role: $0.role,
-                content: $0.content,
+                content: canonicalConversationContent(role: $0.role, content: $0.content),
                 images: $0.images.map { $0.url.absoluteString }
             )
         }
     }
+}
+
+private func canonicalConversationContent(role: ChatMessage.Role, content: String) -> String {
+    let normalized = content.replacingOccurrences(of: "\r\n", with: "\n")
+    guard role == .assistant else { return normalized }
+
+    let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let reasoningEnd = trimmed.range(of: "</think>") else {
+        return trimmed
+    }
+
+    var reasoning = String(trimmed[..<reasoningEnd.lowerBound])
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if reasoning.hasPrefix("<think>") {
+        reasoning.removeFirst("<think>".count)
+        reasoning = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let answer = String(trimmed[reasoningEnd.upperBound...])
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    return "<think>\(reasoning)</think>\n\(answer)"
 }
 
 private struct ConversationMessageSignature: Equatable {

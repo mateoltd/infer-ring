@@ -34,7 +34,7 @@
       "location" : "https://github.com/mateoltd/mlx-swift-lm",
       "state" : {
         "branch" : "perf/qwen35-flight-v2",
-        "revision" : "dc2388ac4b401a9fabab6e466eae01e4cbde4644"
+        "revision" : "b743f4080f290ddb0c7b292aa4dcaee0bb609996"
       }
     },
     {

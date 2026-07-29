@@ -152,6 +152,18 @@ final class FileServerHandler: ChannelInboundHandler {
 
                 sendData(context: context, body: response, status: .ok)
             }
+            else if path == "/debug/generation" {
+                Task {
+                    let snapshot = await modelManager?.latestGenerationMetrics()
+                    eventLoop.execute {
+                        loopBoundSelf.value.sendData(
+                            context: loopBoundContext.value,
+                            body: snapshot,
+                            status: .ok
+                        )
+                    }
+                }
+            }
             else if path.hasPrefix("/v1/models") {
                 handleModels(context: context)
             }
