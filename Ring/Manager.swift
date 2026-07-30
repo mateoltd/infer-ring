@@ -146,4 +146,31 @@ public final class MLXManager {
         return context
     }
 
+    /// Load the weighted Qwen MTP sidecar only on rank 0. Pipeline workers
+    /// use a weightless follower that receives rank 0's proposal block before
+    /// all ranks enter target verification.
+    public func loadQwenMTPDrafter(
+        from directory: URL
+    ) async throws -> MTPDrafterContainer {
+        await Qwen35MTPRegistration.register()
+
+        if let group, Int(group.rank) != 0 {
+            let context = MTPDrafterContext(
+                configuration: ModelConfiguration(
+                    id: "mlx-community/Qwen3.6-35B-A3B-MTP-4bit-follower"
+                ),
+                model: Qwen35MTPFollowerModel()
+            )
+            return MTPDrafterContainer(context: context)
+        }
+
+        let tokenizerLoader = SwiftTransformersTokenizerLoader()
+        let context = try await MTPDrafterModelFactory.shared.load(
+            from: directory,
+            using: tokenizerLoader
+        )
+        eval(context.model)
+        return MTPDrafterContainer(context: context)
+    }
+
 }

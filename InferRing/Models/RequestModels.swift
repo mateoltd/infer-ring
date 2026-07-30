@@ -23,6 +23,7 @@ struct ModelLoadRequest: Codable {
     let modelCard: ModelCard
     let availableFiles: [String]
     let shardMeta: ShardMetadata
+    let enableQwenMTP: Bool
     let requestID: String
     let timestamp: Date
 }
@@ -32,6 +33,26 @@ struct ModelLoadResponse: Codable {
     let success: Bool
     let errorMessage: String?
     let timestamp: Date
+}
+
+struct DebugModelLoadRequest: Codable {
+    let modelId: String
+    let requestID: String
+}
+
+struct DebugRingDevice: Codable {
+    let name: String
+    let host: String
+    let rank: Int?
+    let recommendedRAM: Int?
+}
+
+struct DebugRingSnapshot: Codable {
+    let state: String
+    let isLeader: Bool
+    let usableRAM: Int
+    let discovered: [DebugRingDevice]
+    let ring: [DebugRingDevice]
 }
 
 struct GenerationRequest: Codable {

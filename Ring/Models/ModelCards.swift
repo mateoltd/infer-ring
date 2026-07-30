@@ -781,6 +781,25 @@ public struct ModelCards {
                 supportsTensor: false
             )
         ),
+        "Qwen3.6-35B-A3B-4bit": ModelCard(
+            shortId: "Qwen3.6-35B-A3B-4bit",
+            modelId: "mlx-community/Qwen3.6-35B-A3B-4bit",
+            name: "Qwen3.6 35B A3B (4-bit)",
+            description: """
+            Qwen3.6 35B A3B with 3B active parameters per token. The 4-bit MLX \
+            checkpoint supports pipeline sharding and an optional native MTP \
+            sidecar for speculative decoding.
+            """,
+            tags: ["Text", "Coding"],
+            metadata: ModelMetadata(
+                modelId: "mlx-community/Qwen3.6-35B-A3B-4bit",
+                prettyName: "Qwen3.6 35B A3B (4-bit)",
+                storageSize: MemorySize.from_mb(20400),
+                nLayers: 40,
+                hiddenSize: 2048,
+                supportsTensor: false
+            )
+        ),
         "Qwen3.5-35B-A3B-FP8": ModelCard(
             shortId: "Qwen3.5-35B-A3B-FP8",
             modelId: "Qwen/Qwen3.5-35B-A3B-FP8",

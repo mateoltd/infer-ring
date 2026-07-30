@@ -164,6 +164,58 @@ final class FileServerHandler: ChannelInboundHandler {
                     }
                 }
             }
+            else if path == "/debug/ring" {
+                sendData(
+                    context: context,
+                    body: ringCoordinator?.debugSnapshot(),
+                    status: .ok
+                )
+            }
+            else if path == "/debug/loadModel" {
+                guard let data = getData(context: context) else { return }
+                guard let request = parseBody(
+                    data: data,
+                    context: context,
+                    type: DebugModelLoadRequest.self
+                ) else { return }
+
+                Task {
+                    let response: ModelLoadResponse
+                    if let modelCard = ModelCards.allModels[request.modelId],
+                       let modelManager {
+                        do {
+                            try await modelManager.loadModelAcrossPeers(modelCard)
+                            response = ModelLoadResponse(
+                                requestID: request.requestID,
+                                success: true,
+                                errorMessage: nil,
+                                timestamp: Date()
+                            )
+                        } catch {
+                            response = ModelLoadResponse(
+                                requestID: request.requestID,
+                                success: false,
+                                errorMessage: error.localizedDescription,
+                                timestamp: Date()
+                            )
+                        }
+                    } else {
+                        response = ModelLoadResponse(
+                            requestID: request.requestID,
+                            success: false,
+                            errorMessage: "Unknown model or ModelManager unavailable",
+                            timestamp: Date()
+                        )
+                    }
+                    eventLoop.execute {
+                        loopBoundSelf.value.sendData(
+                            context: loopBoundContext.value,
+                            body: response,
+                            status: .ok
+                        )
+                    }
+                }
+            }
             else if path.hasPrefix("/v1/models") {
                 handleModels(context: context)
             }

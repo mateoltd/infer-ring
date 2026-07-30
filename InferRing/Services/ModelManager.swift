@@ -35,6 +35,12 @@ final class ModelManager {
     @ObservationIgnored
     private var chatSession: ChatSession?
     @ObservationIgnored
+    private var currentMTPDrafter: MTPDrafterContainer? {
+        didSet {
+            resetChatSession()
+        }
+    }
+    @ObservationIgnored
     private var currentToolSignature: Data?
     @ObservationIgnored
     private let chatHistoryStore = ChatHistoryStore()
@@ -55,6 +61,15 @@ final class ModelManager {
     var promptTokensPerSecond: Double?
     var tokensPerSecond: Double?
 
+    private static let qwenMTPModelId =
+        "mlx-community/Qwen3.6-35B-A3B-MTP-4bit"
+
+    private static var qwenMTPDirectory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("models")
+            .appendingPathComponent(qwenMTPModelId)
+    }
+
     func messageHistory() async -> [ChatMessage] {
         await chatHistoryStore.snapshot()
     }
@@ -66,13 +81,25 @@ final class ModelManager {
     // MARK: - Public API
 
     private func checkIfCanLoad(_ modelCard: ModelCard) throws {
-        let totalMemory = coordinator?.usableRAM ?? 0
+        guard let coordinator else {
+            throw ModelManagerError.notInitialized
+        }
+        let usableMemory = coordinator.usableRAM
         let weightBytes = modelCard.metadata.storageSize.inBytes
         let runtimeHeadroom = max(2 * 1024 * 1024 * 1024, weightBytes / 5)
         let requiredMemory = weightBytes + runtimeHeadroom
-        if requiredMemory > totalMemory {
+        let isDistributedQwen36 =
+            coordinator.ringDevices.count > 1
+            && modelCard.modelId.contains("Qwen3.6-35B-A3B")
+        let physicalCapacityWithReserve =
+            max(0, coordinator.totalRAM - 1 * 1024 * 1024 * 1024)
+        let boundedCapacity =
+            isDistributedQwen36
+            ? max(usableMemory, physicalCapacityWithReserve)
+            : usableMemory
+        if requiredMemory > boundedCapacity {
             throw ModelManagerError.insufficientResources(
-                "total ring memory: \(totalMemory.formattedMemory), weights: \(weightBytes.formattedMemory), required with runtime headroom: \(requiredMemory.formattedMemory)"
+                "bounded ring memory: \(boundedCapacity.formattedMemory), weights: \(weightBytes.formattedMemory), required with runtime headroom: \(requiredMemory.formattedMemory)"
             )
         }
     }
@@ -100,6 +127,12 @@ final class ModelManager {
         var responses: [ModelLoadResponse] = []
         let requestId = UUID().uuidString
         let shardMeta = try assignShardMetadata(modelCard: modelCard)
+        let enableQwenMTP =
+            modelCard.modelId.contains("Qwen3.6-35B-A3B")
+            && ProcessInfo.processInfo.environment["INFER_RING_MTP"] == "1"
+            && FileManager.default.fileExists(
+                atPath: Self.qwenMTPDirectory
+                    .appendingPathComponent("model.safetensors").path)
 
         let availableFiles = await modelCard.downloadedFiles
         let localProgressMulti = !peers.isEmpty ? 0.5 : 1.0 // Local loading is 50% of total if peers present
@@ -108,7 +141,11 @@ final class ModelManager {
             group.addTask { [weak self] in
                 guard let self else { return nil }
                 do {
-                    let result = try await loadModelLocally(modelCard, shardMeta: shardMeta[coordinator.myRank]) { progress in
+                    let result = try await loadModelLocally(
+                        modelCard,
+                        shardMeta: shardMeta[coordinator.myRank],
+                        enableQwenMTP: enableQwenMTP
+                    ) { progress in
                         progressHandler(progress.fractionCompleted * localProgressMulti)
                     }
                     loadingProgress += localProgressMulti
@@ -130,6 +167,7 @@ final class ModelManager {
                         modelCard: modelCard,
                         availableFiles: availableFiles,
                         shardMeta: shardMeta[peer.rank],
+                        enableQwenMTP: enableQwenMTP,
                         requestID: requestId,
                         timestamp: Date()
                     )
@@ -448,11 +486,20 @@ final class ModelManager {
             ChatImageAttachmentStore.removeAll()
         }
 
+        let mtpContext: [String: any Sendable]? =
+            currentMTPDrafter.map {
+                [
+                    "mtpDrafter": $0,
+                    "mtpBlockSize": 3,
+                ]
+            }
+
         if resolvedHistory.count == 1, resolvedHistory.first?.role == .system {
             chatSession = ChatSession(
                 currentModel,
                 instructions: resolvedHistory[0].content,
                 generateParameters: flightGenerationParameters,
+                additionalContext: mtpContext,
                 tools: tools
             )
         }
@@ -467,6 +514,7 @@ final class ModelManager {
                     )
                 },
                 generateParameters: flightGenerationParameters,
+                additionalContext: mtpContext,
                 tools: tools
             )
         }
@@ -553,7 +601,11 @@ final class ModelManager {
             }
             
             ParallelModeSettings.useTensorParallel = request.shardMeta.useTensorParallel
-            _ = try await loadModelLocally(request.modelCard, shardMeta: request.shardMeta) { _ in }
+            _ = try await loadModelLocally(
+                request.modelCard,
+                shardMeta: request.shardMeta,
+                enableQwenMTP: request.enableQwenMTP
+            ) { _ in }
             currentModelCard = request.modelCard
 
             return ModelLoadResponse(
@@ -579,6 +631,7 @@ final class ModelManager {
     private func loadModelLocally(
         _ modelCard: ModelCard,
         shardMeta: ShardMetadata,
+        enableQwenMTP: Bool = false,
         progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws -> ModelLoadResponse? {
         guard let mlxManager else {
@@ -591,7 +644,13 @@ final class ModelManager {
         }
 #endif
 
-        currentModel = try await mlxManager.loadModel(modelCard, shardMeta: shardMeta, progressHandler: progressHandler)
+        currentMTPDrafter = nil
+        currentModel = try await mlxManager.loadModel(
+            modelCard, shardMeta: shardMeta, progressHandler: progressHandler)
+        if enableQwenMTP {
+            currentMTPDrafter = try await mlxManager.loadQwenMTPDrafter(
+                from: Self.qwenMTPDirectory)
+        }
         return nil
     }
     
@@ -626,8 +685,12 @@ final class ModelManager {
             let requestedPhoneLayers = Int(
                 ProcessInfo.processInfo.environment["INFER_RING_PHONE_LAYERS"] ?? ""
             )
+            // Keep the iPhone 15 Pro below its measured jetsam cliff. The
+            // 35B target is allowed to use macOS swap for the remaining layers;
+            // iOS has no equivalent recoverable pressure path.
+            let defaultPhoneLayers = max(1, nLayers / 8)
             let maxPhoneLayers = min(
-                max(1, requestedPhoneLayers ?? nLayers / 8),
+                max(1, requestedPhoneLayers ?? defaultPhoneLayers),
                 max(1, nLayers - 1)
             )
             var reclaimedLayers = 0
@@ -688,6 +751,10 @@ struct GenerationDebugSnapshot: Codable, Sendable {
     var generationTimeSeconds: Double?
     var promptTokensPerSecond: Double?
     var generationTokensPerSecond: Double?
+    var proposedDraftTokens: Int?
+    var acceptedDraftTokens: Int?
+    var draftAcceptanceRate: Double?
+    var mtpPassthroughReason: String?
     var cachedTokensAfter: Int?
     var activeCachesAfter: Int?
     var cacheOffsetsAfter: [Int]?
@@ -733,6 +800,10 @@ private actor GenerationMetricsStore {
             generationTimeSeconds: nil,
             promptTokensPerSecond: nil,
             generationTokensPerSecond: nil,
+            proposedDraftTokens: nil,
+            acceptedDraftTokens: nil,
+            draftAcceptanceRate: nil,
+            mtpPassthroughReason: nil,
             cachedTokensAfter: nil,
             activeCachesAfter: nil,
             cacheOffsetsAfter: nil,
@@ -755,6 +826,15 @@ private actor GenerationMetricsStore {
         latest?.generationTimeSeconds = info.generateTime
         latest?.promptTokensPerSecond = info.promptTokensPerSecond
         latest?.generationTokensPerSecond = info.tokensPerSecond
+        latest?.proposedDraftTokens = info.proposedDraftTokens
+        latest?.acceptedDraftTokens = info.acceptedDraftTokens
+        if let proposed = info.proposedDraftTokens,
+            let accepted = info.acceptedDraftTokens,
+            proposed > 0
+        {
+            latest?.draftAcceptanceRate = Double(accepted) / Double(proposed)
+        }
+        latest?.mtpPassthroughReason = info.passthroughReason
         latest?.cachedTokensAfter = cacheAfter.maximumOffset
         latest?.activeCachesAfter = cacheAfter.activeCacheCount
         latest?.cacheOffsetsAfter = cacheAfter.offsets

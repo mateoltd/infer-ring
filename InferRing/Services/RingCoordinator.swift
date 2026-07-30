@@ -64,6 +64,22 @@ final class RingCoordinator {
     // MARK: - Public API
 
     func start() {
+        if let manualHost = ProcessInfo.processInfo.environment["INFER_RING_PEER_HOST"],
+           let manualName = ProcessInfo.processInfo.environment["INFER_RING_PEER_NAME"],
+           !manualHost.isEmpty,
+           !manualName.isEmpty {
+            let manualPeer = DiscoveredDevice(
+                name: manualName,
+                host: manualHost,
+                hardwareProfile: nil
+            )
+            peers = [manualPeer]
+            allDevices = [manualPeer, localDevice].sorted { $0.deviceID < $1.deviceID }
+            myIndex = allDevices.firstIndex { $0.id == localDeviceID } ?? 0
+            initiateElection()
+            return
+        }
+
         Task {
             for await nodes in Observations({ [weak self] in
                 self?.bonjourClient?.nodes ?? []
@@ -88,6 +104,30 @@ final class RingCoordinator {
                 }
             }
         }
+    }
+
+    func debugSnapshot() -> DebugRingSnapshot {
+        DebugRingSnapshot(
+            state: String(describing: state),
+            isLeader: isLeader,
+            usableRAM: usableRAM,
+            discovered: peers.map {
+                DebugRingDevice(
+                    name: $0.name,
+                    host: $0.host,
+                    rank: nil,
+                    recommendedRAM: $0.hardwareProfile?.recommendedUsageRAM
+                )
+            },
+            ring: ringDevices.map {
+                DebugRingDevice(
+                    name: $0.device.name,
+                    host: $0.device.host,
+                    rank: $0.rank,
+                    recommendedRAM: $0.device.hardwareProfile?.recommendedUsageRAM
+                )
+            }
+        )
     }
 
     func handleElectionRequest(_ message: ElectionMessage) {
