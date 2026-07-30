@@ -311,7 +311,11 @@ final class FileServerHandler: ChannelInboundHandler {
                     loopBoundSelf.value.startSSE(context: context.value)
                 }
 
-                let stream = await modelManager?.streamResponse(to: request.messages, tools: selectedTools)
+                let stream = await modelManager?.streamResponse(
+                    to: request.messages,
+                    tools: selectedTools,
+                    maxTokens: request.requestedMaxTokens
+                )
 
                 do {
                     var toolCallCount = 0
@@ -396,7 +400,11 @@ final class FileServerHandler: ChannelInboundHandler {
             else {
                 var fullText = ""
                 var toolCalls: [OpenAPIToolCall] = []
-                let stream = await modelManager?.streamResponse(to: request.messages, tools: selectedTools)
+                let stream = await modelManager?.streamResponse(
+                    to: request.messages,
+                    tools: selectedTools,
+                    maxTokens: request.requestedMaxTokens
+                )
                 if let stream {
                     try? await {
                         for try await chunk in stream {

@@ -40,6 +40,7 @@ struct GenerationRequest: Codable {
     let inputRole: ChatMessage.Role
     let history: [OpenAPIMessage]?
     let tools: [OpenAPITool]?
+    let maxTokens: Int?
     let timestamp: Date
 }
 

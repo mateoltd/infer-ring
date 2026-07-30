@@ -18,6 +18,11 @@ final class HardwareMonitor {
         Memory.memoryLimit = currentProfile.recommendedUsageRAM
 #if os(iOS)
         Memory.cacheLimit = currentProfile.recommendedUsageRAM / 2
+#else
+        // MLX's allocator cache is reusable scratch space, not model state.
+        // Keeping several GiB of freed prefill buffers resident forces macOS
+        // to swap unrelated apps even though the live 9B model still fits.
+        Memory.cacheLimit = min(currentProfile.recommendedUsageRAM / 8, 512 * 1024 * 1024)
 #endif
     }
     

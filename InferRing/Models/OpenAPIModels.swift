@@ -22,14 +22,22 @@ struct OpenAPIChatCompletionRequest: Codable {
     let stream: Bool?
     let tools: [OpenAPITool]?
     let toolChoice: AnyCodable?
+    let maxTokens: Int?
+    let maxCompletionTokens: Int?
     
     enum CodingKeys: String, CodingKey {
         case model, messages, stream, tools
         case toolChoice = "tool_choice"
+        case maxTokens = "max_tokens"
+        case maxCompletionTokens = "max_completion_tokens"
     }
 }
 
 extension OpenAPIChatCompletionRequest {
+    var requestedMaxTokens: Int? {
+        maxCompletionTokens ?? maxTokens
+    }
+
     var selectedTools: [OpenAPITool]? {
         guard let tools else { return nil }
         guard let toolChoice else { return tools }

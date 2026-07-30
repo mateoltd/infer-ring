@@ -48,7 +48,7 @@ final class ModelManager {
         quantizedKVStart: 0,
         temperature: 0.2,
         topP: 0.95,
-        prefillStepSize: 2048
+        prefillStepSize: 1024
     )
     var currentModelCard: ModelCard?
     var isLoading: Bool = false
@@ -165,7 +165,8 @@ final class ModelManager {
     /// - Returns: response stream
     func streamResponse(
         to messages: [OpenAPIMessage],
-        tools: [OpenAPITool]? = nil
+        tools: [OpenAPITool]? = nil,
+        maxTokens: Int? = nil
     ) async -> AsyncThrowingStream<ModelResponseChunk, any Error> {
         var messages = messages
         guard let lastMessage = messages.popLast() else {
@@ -180,7 +181,8 @@ final class ModelManager {
             images: (lastMessage.content?.imageURLs ?? []).map { ChatImageAttachment(url: $0) },
             history: messages,
             inputRole: lastMessage.role,
-            tools: tools
+            tools: tools,
+            maxTokens: maxTokens
         )
     }
 
@@ -192,14 +194,16 @@ final class ModelManager {
         images: [ChatImageAttachment] = [],
         history: [OpenAPIMessage]? = nil,
         inputRole: ChatMessage.Role = .user,
-        tools: [OpenAPITool]? = nil
+        tools: [OpenAPITool]? = nil,
+        maxTokens: Int? = nil
     ) async -> AsyncThrowingStream<String, any Error> {
         await streamResponseChunks(
             to: input,
             images: images,
             history: history,
             inputRole: inputRole,
-            tools: tools
+            tools: tools,
+            maxTokens: maxTokens
         )
         .compactMap { chunk -> String? in
             guard case .text(let text) = chunk else { return nil }
@@ -216,6 +220,7 @@ final class ModelManager {
         history: [OpenAPIMessage]? = nil,
         inputRole: ChatMessage.Role = .user,
         tools: [OpenAPITool]? = nil,
+        maxTokens: Int? = nil,
         distributeToPeers: Bool = true
     ) async -> AsyncThrowingStream<ModelResponseChunk, any Error> {
         let requestID = UUID().uuidString
@@ -228,6 +233,11 @@ final class ModelManager {
         guard let chatSession else {
             return AsyncThrowingStream { $0.finish(throwing: ModelManagerError.notInitialized) }
         }
+        var requestParameters = flightGenerationParameters
+        if let maxTokens {
+            requestParameters.maxTokens = min(max(maxTokens, 1), 4096)
+        }
+        chatSession.generateParameters = requestParameters
 
         let cacheBefore = await chatSession.cacheMetrics()
         await generationMetricsStore.begin(
@@ -249,6 +259,7 @@ final class ModelManager {
                 inputRole: inputRole,
                 history: history,
                 tools: tools,
+                maxTokens: maxTokens,
                 timestamp: Date()
             )
 
@@ -304,6 +315,7 @@ final class ModelManager {
                     role: .assistant,
                     content: Self.assistantHistoryContent(text: fullReply, toolCalls: toolCalls)
                 )
+                Memory.clearCache()
                 continuation.finish()
             }
             catch {
@@ -311,6 +323,7 @@ final class ModelManager {
                     requestID: requestID,
                     error: error.localizedDescription
                 )
+                Memory.clearCache()
                 continuation.finish(throwing: error)
             }
         }
@@ -328,6 +341,7 @@ final class ModelManager {
                 history: request.history,
                 inputRole: request.inputRole,
                 tools: request.tools,
+                maxTokens: request.maxTokens,
                 distributeToPeers: false
             )
             for try await _ in stream {}
