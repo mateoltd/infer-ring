@@ -25,8 +25,25 @@ public final class MLXManager {
     public init() {}
 
     private var group: DistributedGroup?
+    private var groupConfiguration: GroupConfiguration?
+
+    private struct GroupConfiguration: Equatable {
+        let rank: Int
+        let devices: [String]
+    }
 
     public func initMLX(rank: Int, devices: [String]) throws {
+        let requestedConfiguration = GroupConfiguration(rank: rank, devices: devices)
+        if let groupConfiguration {
+            guard groupConfiguration == requestedConfiguration else {
+                throw RingError.failed(
+                    "MLX distributed group is already initialized with a different topology; restart Infer Ring before reforming the ring"
+                )
+            }
+            print("MLX ring already initialized; reusing rank \(rank)")
+            return
+        }
+
         let port = 13373
         let json = try JSONEncoder().encode(devices.map {
             ["\($0):\(port)", "\($0):\(port+1)"]
@@ -47,6 +64,7 @@ public final class MLXManager {
         try MLX.withError {
             group = DistributedGroup.initialize(strict: true)
         }
+        groupConfiguration = requestedConfiguration
     }
 
     public func synchronize() {

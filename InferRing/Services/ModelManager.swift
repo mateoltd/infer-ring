@@ -234,6 +234,21 @@ final class ModelManager {
             return AsyncThrowingStream { $0.finish(throwing: ModelManagerError.notInitialized) }
         }
         var requestParameters = flightGenerationParameters
+        if !(coordinator?.ringPeers.isEmpty ?? true) {
+            // Every pipeline rank runs the generation loop so that its local
+            // caches advance in lockstep. Independent stochastic sampling can
+            // eventually choose different tokens (or EOS) on each device,
+            // making the next forward pass use different sequence lengths and
+            // deadlocking point-to-point transport. Greedy decoding plus the
+            // model's authoritative-logit synchronization keeps ranks exact.
+            requestParameters.temperature = 0
+            // The iPhone 15 Pro completed a continuous 25,070-token Q8-KV
+            // session, then was jetsam-killed while attempting the next
+            // 1,090-token append. Keep distributed sessions at the measured
+            // safe boundary so cache rotation happens before iOS terminates
+            // the worker. Mac-only sessions retain the 100K setting above.
+            requestParameters.maxContextTokens = 25_000
+        }
         if let maxTokens {
             requestParameters.maxTokens = min(max(maxTokens, 1), 4096)
         }
@@ -608,7 +623,13 @@ final class ModelManager {
         // memory. Keep pipeline workers below the jetsam cliff and use the phone
         // primarily as a capacity stage rather than treating all 8 GB as available.
         if !useTensorParallel, size > 1 {
-            let maxPhoneLayers = max(1, nLayers / 8)
+            let requestedPhoneLayers = Int(
+                ProcessInfo.processInfo.environment["INFER_RING_PHONE_LAYERS"] ?? ""
+            )
+            let maxPhoneLayers = min(
+                max(1, requestedPhoneLayers ?? nLayers / 8),
+                max(1, nLayers - 1)
+            )
             var reclaimedLayers = 0
 
             for index in devices.indices

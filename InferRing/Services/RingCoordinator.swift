@@ -114,6 +114,10 @@ final class RingCoordinator {
     }
 
     func startFormation() {
+        guard currentRing == nil, state == .inactive else {
+            dprint("Ring formation ignored because a ring is already active")
+            return
+        }
         bonjourClient?.startSearching()
         if peers.isEmpty {
             startStandaloneRing()

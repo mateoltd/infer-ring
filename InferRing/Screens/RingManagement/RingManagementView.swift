@@ -57,7 +57,11 @@ struct RingManagementView: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(coordinator.electionInProgress)
+                        .disabled(
+                            coordinator.electionInProgress
+                                || coordinator.currentRing != nil
+                                || coordinator.state != .inactive
+                        )
                         
                         Button(role: .destructive) {
                             stopFormation()
