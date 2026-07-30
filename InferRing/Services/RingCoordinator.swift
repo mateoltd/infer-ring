@@ -72,6 +72,22 @@ final class RingCoordinator {
             }
         }
         bonjourClient?.startSearching()
+
+        if ProcessInfo.processInfo.environment["INFER_RING_AUTO_FORM"] == "1" {
+            Task {
+                // Bonjour can discover the peer before both devices have a
+                // consistent successor list. A failed first election returns
+                // to inactive, but no later node-change event retriggers it.
+                // Retry only for launcher-requested distributed startup.
+                for _ in 0 ..< 15 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard currentRing == nil else { return }
+                    if !peers.isEmpty, state == .inactive {
+                        initiateElection()
+                    }
+                }
+            }
+        }
     }
 
     func handleElectionRequest(_ message: ElectionMessage) {
